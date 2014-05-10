@@ -1,4 +1,3 @@
-__author__ = 'Matt'
 __projectName__ = 'TPE-Price-Changing-Tool'
 __organization__ = 'Tractor Parts Express'
 __author__ = 'Matt Presley'
@@ -15,7 +14,6 @@ The system reads in this data and outputs files with updated product info, which
 
 Planned changes in version 1.03:
 - Make the program more modular, allowing the user to customize how they want prices changed and for which products
-- Make the program (slightly) more object-oriented, using a base class (Product) and an inherited class (TpeProduct)
 - Possibly add GUI elements to make customization more user-friendly
 
 """
@@ -29,12 +27,12 @@ finTiscoPrices = open('IN - Tisco Prices.txt', 'r')
 finDiscountProdNums = open('IN - Discount Product Numbers.txt', 'r')
 finDiscountPrices = open('IN - Discount Prices.txt', 'r')
 finTpeNames = open('IN - TPE Names.txt', 'r')
-finTpeSKUs = open('IN - TPE SKUs.txt', 'r')
+finTpeSkus = open('IN - TPE SKUs.txt', 'r')
 finTpePrices = open('IN - TPE Prices.txt', 'r')
 finTpeWeights = open('IN - TPE Weights.txt', 'r')
 
 # output file streams
-foutSKUs = open('OUT - SKUs.txt', 'w')
+foutSkus = open('OUT - Skus.txt', 'w')
 foutNames = open('OUT - Names.txt', 'w')
 foutPrices = open('OUT - Prices.txt', 'w')
 foutMissingProds = open('OUT - Missing Products.txt', 'w')
@@ -44,20 +42,23 @@ foutUpdatedProducts = open('OUT - Updated Product List.txt', 'w')
 foutTiscoProducts = open('OUT - Tisco Product List.txt', 'w')
 
 # lists to hold various types of Products
-TiscoProducts = [] # holds ALL Tisco products
-DiscountProducts = [] # holds only discounted Tisco products
-TpeProducts = [] # holds all products from TPE's current inventory
-MissingProducts = [] # TPE products for which a match is not found
-ExcludedProducts = [] # TPE products which are not to be changed due to type exclusion
-UpdatedProducts = [] # TPE products which have their prices updated
+TiscoProducts = [] 		# holds ALL Tisco products
+DiscountProducts = [] 	# holds only discounted Tisco products
+TpeProducts = [] 		# holds all products from TPE's current inventory
+MissingProducts = [] 	# TPE products for which a match is not found
+ExcludedProducts = [] 	# TPE products which are not to be changed due to type exclusion
+UpdatedProducts = [] 	# TPE products which have their prices updated
+SinglePackProducts = []	# single-pack products ready to have prices updated
+MultiPackProducts = []	# multi-pack products ready to have prices updated
+ExcludedCategories = ['carburetor.', 'starter.', 'rim.', 'radiator.'] # hard-coding these for now
 
 # user input variables
-updateSinglePack = False # boolean, True if user wants to update items sold individually
-updateMultiPack = False # boolean, True if user wants to update items sold in multi-packs
-
-# price modification variables
-tiscoMarkup = 1.45 # single-pack items have their wholesale price increased by this amount
-multiPackIncrease = 1.10 # multi-pack items have the TPE price increased by this amount instead of using TiscoMarkup
+updateSinglePack = False 		# boolean, True if user wants to update items sold individually
+updateMultiPack = False 		# boolean, True if user wants to update items sold in multi-packs
+singlePackBasePrice = 'current'	# string, determines whether the price increase is based on wholesale or current price
+multiPackBasePrice = 'current'	# string, determines whether the price increase is based on wholesale or current price
+singlePackMultiplier = 1.00 	# float, to be multiplied by the wholesale or current prices of single-pack products
+multiPackMultiplier = 1.00 		# float, to be multiplied by the wholesale or current prices of multi-pack products
 
 
 
@@ -67,9 +68,9 @@ multiPackIncrease = 1.10 # multi-pack items have the TPE price increased by this
 # Product.................. object that holds information about a single product
 # getTiscoProducts()....... reads in data from Tisco's files and creates a list of objects
 # getTpeProducts()......... reads in data from TPE's files and creates a list of objects
-# applyDiscounts()......... finds items in main Tisco list that need discounts and applies those discounts
+# applyTiscoDiscounts()......... finds items in main Tisco list that need discounts and applies those discounts
 # findMatchingProducts()... finds products in TPE's list that match products in Tisco's list
-# findSpecialCases()....... finds products that need to be excluded or modified
+# categorizeProducts()....... finds products that need to be excluded or modified
 # changePrices()........... updates the prices of all items TPE's inventory that we want to change
 # printList().............. writes data to output files to be uploaded to ShopSite
 # printAllInfo()........... writes a formatted set of data about all products in a list
@@ -80,81 +81,111 @@ multiPackIncrease = 1.10 # multi-pack items have the TPE price increased by this
 class Product:
     """Common base class for all products"""
 
-    def __init__(self, SKU, name, prodNum, price, weight, isMultiPack):
-        self.SKU = SKU # string
-        self.name = name # string
-        self.prodNum = prodNum # string
-        self.price = price # float
-        self.weight = weight # float
-        self.isMultiPack = isMultiPack # boolean
-
+    def __init__(self: object, sku, name, prodNum, price, weight, isMultiPack, isExcluded):
+        self.sku = sku 					# string
+        self.name = name 				# string
+        self.prodNum = prodNum 			# string
+        self.price = price 				# float
+        self.weight = weight 			# float
+        self.isMultiPack = isMultiPack 	# boolean
+        self.isExcluded = isExcluded	# boolean
 
 
 def getUserInputs():
-    """
-This function asks the user which types of products they want to change.
-Currently affects only 'single-pack' and 'multi-pack' product categories
-"""
-    print('called getUserInputs()')
+	"""
+	This function asks the user which types of products they want to change and how.
+	For both single- and multi-pack products, the user has the option to change prices based on the wholesale price,
+	based on the current TPE price, or to exclude the category from modification.
+	The user is also asked by what factor they wish for the prices to change.
+	At the end of the function, a summary of the user's choices is displayed to the console.
+	"""
+	print('called getUserInputs()')
 
-    global updateSinglePack
-    global updateMultiPack
+	global updateSinglePack
+	global singlePackBasePrice
+	global singlePackMultiplier
+	global updateMultiPack
+	global multiPackBasePrice
+	global multiPackMultiplier
 
-    # get valid single-pack choice
-    updateSinglePack = input('Do you want to update single-pack items? (yes/no) ')
-    updateSinglePack = updateSinglePack.lower()
-    while updateSinglePack != 'yes' and updateSinglePack != 'y' and updateSinglePack != 'no' and updateSinglePack != 'n':
-        print('ERROR: Only \'yes\' and \'no\' are accepted answers.')
-        updateSinglePack = input('Do you wish to update single-pack items? (yes/no) ')
-        updateSinglePack = updateSinglePack.lower()
-    if updateSinglePack == 'yes' or updateSinglePack == 'y':
-        updateSinglePack = True
-    else:
-        updateSinglePack = False
-    print("Updating single-pack items: " + str(updateSinglePack))#
+	###############################
+	# get single-pack preferences #
+	###############################
 
-    # get valid multi-pack choice
-    updateMultiPack = input('Do you want to update multi-pack items? (yes/no) ')
-    updateMultiPack = updateMultiPack.lower()
-    while updateMultiPack != 'yes' and updateMultiPack != 'y' and updateMultiPack != 'no' and updateMultiPack != 'n':
-        print('ERROR: Only \'yes\' and \'no\' are accepted answers.')
-        updateMultiPack = input('Do you wish to update single-pack items? (yes/no) ')
-        updateMultiPack = updateMultiPack.lower()
-    if updateMultiPack == 'yes' or updateMultiPack == 'y':
-        updateMultiPack = True
-    else:
-        updateMultiPack = False
-    print("Updating multi-pack items: " + str(updateMultiPack))
+	updateSinglePack = input('Do you want to modify single-pack items? (yes/no) ')
+	updateSinglePack = updateSinglePack.lower()
+	while updateSinglePack != 'yes' and updateSinglePack != 'y' and updateSinglePack != 'no' and updateSinglePack != 'n':
+		print('ERROR: Only \'yes\' and \'no\' are accepted answers.')
+		updateSinglePack = input('Do you want to modify single-pack items? (yes/no) ')
+		updateSinglePack = updateSinglePack.lower()
+	if updateSinglePack == 'yes' or updateSinglePack == 'y':
+		updateSinglePack = True
+	else:
+		updateSinglePack = False
 
+	if updateSinglePack:
+		singlePackBasePrice = input('Which prices do you want the new prices based on? (TPE/Tisco)')
+		singlePackBasePrice = singlePackBasePrice.upper()
+		while singlePackBasePrice != 'TPE' and singlePackBasePrice != 'TISCO':
+			print('ERROR: Only \'TPE\' and \'Tisco\' are accepted answers.')
+			singlePackBasePrice = input('Which prices do you want the new prices based on? (TPE/Tisco)')
+			singlePackBasePrice = singlePackBasePrice.upper()
 
+		singlePackMultiplier = input('By what factor would you like to multiply the base price? (ex. \'1.45\' adds a 45% increase) ')
+		singlePackMultiplier = float(singlePackMultiplier)
+		# while singlePackMultiplier is not a float or integer
+		while not (0.49 < singlePackMultiplier < 2.01):
+			print('ERROR: The price multiplier must be between 0.5 (cutting prices in half) and 2.0 (doubling prices).')
+			singlePackMultiplier = input('By what factor would you like to multiply the base price? (ex. \'1.45\' adds a 45% increase)')
+			singlePackMultiplier = float(singlePackMultiplier)
 
-def getTiscoProducts(productList, prodNums, prices):
-    """
-This function takes in an empty list of Product objects and populates it with information from input text files.
-"""
-    print('called getTiscoProducts()')
+	##############################
+	# get multi-pack preferences #
+	##############################
 
-    # fill productList with ALL products
-    for item in prodNums:
-        item = item.replace('\n', '')
-        newProduct = Product("", "", item, 0, 0, False)
-        productList.append(newProduct)
+	updateMultiPack = input('Do you want to modify multi-pack items? (yes/no) ')
+	updateMultiPack = updateMultiPack.lower()
+	while updateMultiPack != 'yes' and updateMultiPack != 'y' and updateMultiPack != 'no' and updateMultiPack != 'n':
+		print('ERROR: Only \'yes\' and \'no\' are accepted answers.')
+		updateMultiPack = input('Do you want to modify multi-pack items? (yes/no) ')
+		updateMultiPack = updateMultiPack.lower()
+	if updateMultiPack == 'yes' or updateMultiPack == 'y':
+		updateMultiPack = True
+	else:
+		updateMultiPack = False
+	if updateMultiPack:
+		multiPackBasePrice = input('Which prices do you want the new prices based on? (TPE/Tisco)')
+		multiPackBasePrice = multiPackBasePrice.upper()
+		while multiPackBasePrice != 'TPE' and multiPackBasePrice != 'TISCO':
+			print('ERROR: Only \'TPE\' and \'Tisco\' are accepted answers.')
+			multiPackBasePrice = input('Which prices do you want the new prices based on? (TPE/Tisco)')
+			multiPackBasePrice = multiPackBasePrice.upper()
 
-    i = 0
-    for item in prices:
-        item = item.replace(',', '')
-        item = item.lstrip()
-        item = float(item)
-        productList[i].price = item
-        i += 1
+		multiPackMultiplier = input('By what factor would you like to multiply the base price? (ex. \'1.45\' adds a 45% increase) ')
+		multiPackMultiplier = float(multiPackMultiplier)
+		# while singlePackMultiplier is not a float or integer
+		while not (0.49 < multiPackMultiplier < 2.01):
+			print('ERROR: The price multiplier must be between 0.5 (cutting prices in half) and 2.0 (doubling prices).')
+			multiPackMultiplier = input('By what factor would you like to multiply the base price? (ex. \'1.45\' adds a 45% increase)')
+			multiPackMultiplier = float(multiPackMultiplier)
+
+	print("\nSINGLE-PACK PREFERENCES")
+	print("Update desired: " + str(updateMultiPack))
+	print("Base price: " + str(singlePackBasePrice))
+	print("Prices will be multiplied by " + str(singlePackMultiplier))
+
+	print("\nMULTI-PACK PREFERENCES")
+	print("Update desired: " + str(updateSinglePack))
+	print("Base price: " + str(multiPackBasePrice))
+	print("Prices will be multiplied by " + str(multiPackMultiplier) + '\n')
 
 
 
 def getTpeProducts():
     """
-This function reads in TPE product names and extracts the part numbers, populating a list of Product objects with
-both names and numbers. It then adds the SKU, price, and weight for each item.
-"""
+	This function reads in TPE product names and extracts the part numbers, populating a list of Product objects with
+	both names and numbers. It then adds the sku, price, and weight for each item.
+	"""
     print('called getTpeProducts()')
 
     # get names
@@ -162,14 +193,14 @@ both names and numbers. It then adds the SKU, price, and weight for each item.
         name = name.replace('\n', '')
         words = name.split()
         prodNumIndex = len(words)
-        newProduct = Product("", name, words[prodNumIndex - 1], 0, 0, False)
+        newProduct = Product("", name, words[prodNumIndex - 1], 0, 0, False, False)
         TpeProducts.append(newProduct)
 
-    # get SKUs
+    # get skus
     i = 0
-    for sku in finTpeSKUs:
+    for sku in finTpeSkus:
         sku = sku.replace('\n', '')
-        TpeProducts[i].SKU = sku
+        TpeProducts[i].sku = sku
         i += 1
 
     # get prices
@@ -195,11 +226,33 @@ both names and numbers. It then adds the SKU, price, and weight for each item.
 
 
 
-def applyDiscounts():
+def getTiscoProducts(productList, prodNums, prices):
     """
-This function applies discounts to any matching products in the "full" Tisco list.
-"""
-    print('called applyDiscounts()')
+	This function takes in an empty list of Product objects and populates it with information from input text files.
+	"""
+    print('called getTiscoProducts()')
+
+    # fill productList with ALL products
+    for item in prodNums:
+        item = item.replace('\n', '')
+        newProduct = Product("", "", item, 0, 0, False, False)
+        productList.append(newProduct)
+
+    i = 0
+    for item in prices:
+        item = item.replace(',', '')
+        item = item.lstrip()
+        item = float(item)
+        productList[i].price = item
+        i += 1
+
+
+
+def applyTiscoDiscounts():
+    """
+	This function applies discounts to any matching products in the "full" Tisco list.
+	"""
+    print('called applyTiscoDiscounts()')
 
     for discountProduct in DiscountProducts:
         for product in TiscoProducts:
@@ -208,15 +261,15 @@ This function applies discounts to any matching products in the "full" Tisco lis
 
 
 
-def findSpecialCases(productList):
+def categorizeProducts(productList):
     """
-This function compares each item in the given list against a set of criteria.
-If a product fals under certain categories it will be copied into ExcludedProducts and will not be changed.
-If a product is a multi-pack item, it is flagged as such and its price change will be handled differently.
-"""
-    print('called findSpecialCases()')
+	This function compares each item in the given list against a set of criteria.
+	If a product fals under certain categories it will be copied into ExcludedProducts and will not be changed.
+	If a product is a multi-pack item, it is flagged as such and its price change will be handled differently.
+	"""
+    print('called categorizeProducts()')
 
-    removalSKU = [] # holds SKUs (keys) of any items that are to be excluded
+    removalSku = [] # holds sku (keys) of any items that are to be excluded
 
     for product in productList:
         exclude = False
@@ -229,7 +282,7 @@ If a product is a multi-pack item, it is flagged as such and its price change wi
             # identify multi-pack items, and exclude if the user does not wish to update them
             if word == 'pack.':
                 product.isMultiPack = True
-                if updateMultiPack == False:
+                if not updateMultiPack:
                     exclude = True
 
             # exclude if the product is a carburetor
@@ -257,13 +310,13 @@ If a product is a multi-pack item, it is flagged as such and its price change wi
 
         # sort items to be excluded into lists, either for exlusion by type or quantity
         if exclude:
-            removalSKU.append(product.SKU)
+            removalSku.append(product.sku)
             ExcludedProducts.append(product)
 
     # remove any products from the list that are to be excluded
-    for sku in removalSKU:
+    for sku in removalSku:
         for product in productList:
-            if product.SKU == sku:
+            if product.sku == sku:
                 productList.remove(product)
 
 
@@ -275,7 +328,6 @@ Any matching products are added to a list: UpdatedProducts
 Any products without matches are added to a different list: MissingProducts
 """
     print('called findMatchingProducts()')
-    j = 1
     numTpeProds = 1
     tpeProdsLength = len(TpeProducts)
     for tpeItem in TpeProducts:
@@ -307,11 +359,11 @@ This function prints out a formatted list containing all members of a product li
     if not productList:
         outfile.write('List is empty!\n\n\n')
 
-    # find maximum SKU length
+    # find maximum sku length
     skuLength = 0
     for product in productList:
-        if len(product.SKU) > skuLength:
-            skuLength = len(product.SKU)
+        if len(product.sku) > skuLength:
+            skuLength = len(product.sku)
 
     # write labels
     outfile.write('PRODUCT NUMBER SKU')
@@ -328,10 +380,10 @@ This function prints out a formatted list containing all members of a product li
         numSpaces = 20 - len(product.prodNum)
         for i in range(0, numSpaces):
             outfile.write(" ")
-        outfile.write(str(product.SKU))
+        outfile.write(str(product.sku))
 
         # price
-        numSpaces = skuLength - len(str(product.SKU))
+        numSpaces = skuLength - len(str(product.sku))
         for i in range(0, numSpaces):
             outfile.write(" ")
         outfile.write(str(product.price))
@@ -364,11 +416,11 @@ This function also updates the name of the item to reflect the new price.
 
         #increase price of single-pack items
         if updateSinglePack == True and product.isMultiPack == False:
-            product.price *= tiscoMarkup
+            product.price *= singlePackMultiplier
 
         # increase price of multi-pack items
         elif updateMultiPack == True and product.isMultiPack == True:
-            product.price *= multiPackIncrease
+            product.price *= multiPackMultiplier
 
         # remove the extra cents
         product.price = math.floor(product.price)
@@ -379,7 +431,7 @@ This function also updates the name of the item to reflect the new price.
             product.price += 1
 
         # for prices specifically just above $100, drop them to $99.99
-        if product.price > 99 and product.price < 104:
+        if 99 < product.price < 104:
             product.price = 99
 
         # "round up" to 99 cents
@@ -399,23 +451,22 @@ This function also updates the name of the item to reflect the new price.
 
 def printList(productList):
     """
-This function takes in a product list and writes product names, prices, and SKUs
+This function takes in a product list and writes product names, prices, and skus
 to three separate text files for copy/pasting into Excel
 """
     for product in productList:
         foutNames.write(product.name + '\n')
-        foutSKUs.write(product.SKU + '\n')
+        foutSkus.write(product.sku + '\n')
         foutPrices.write(str(product.price).lstrip() + '\n')
 
 
 
-##############################################
-# "MAIN" #
-##############################################
+##############################
+#           "MAIN"           #
+##############################
 
-# ask user which types of products they want to update
+# ask user which types of products they want to modify and how
 getUserInputs()
-
 
 
 # read in info from text files
@@ -429,10 +480,10 @@ printAllInfo(TiscoProducts, foutTiscoProducts)
 
 
 # apply discounts to items in TiscoProducts
-applyDiscounts()
+applyTiscoDiscounts()
 
 # find TPE products that are to be excluded or flagged as special cases
-findSpecialCases(TpeProducts)
+categorizeProducts(TpeProducts)
 
 # compare Tisco products and TPE products to find products that need price changes
 findMatchingProducts()
@@ -446,7 +497,7 @@ printList(UpdatedProducts)
 
 
 # print formatted lists of products
-#printAllInfo(TpeProducts, )
+# printAllInfo(TpeProducts, )
 
 printAllInfo(UpdatedProducts, foutUpdatedProducts)
 printAllInfo(MissingProducts, foutMissingProds)
@@ -460,14 +511,14 @@ finTiscoProdNums.close()
 finDiscountPrices.close()
 finDiscountProdNums.close()
 finTpeNames.close()
-finTpeSKUs.close()
+finTpeSkus.close()
 finTpePrices.close()
 finTpeWeights.close()
 
 
 
 # close output streams
-foutSKUs.close()
+foutSkus.close()
 foutNames.close()
 foutPrices.close()
 foutMissingProds.close()
